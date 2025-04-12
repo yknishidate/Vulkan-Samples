@@ -61,7 +61,7 @@ image::./images/debug-window.png[Debug Window]
 
 == Driver version
 
-The debug window shows the driver version of the GPU, which follows the https://registry.khronos.org/vulkan/specs/1.3-extensions/html/chap44.html#extendingvulkan-coreversions-versionnumbers[Vulkan semantics], with a major, minor, and patch number.
+The debug window shows the driver version of the GPU, which follows the https://docs.vulkan.org/spec/latest/chapters/extensions.html#extendingvulkan-coreversions-versionnumbers[Vulkan semantics], with a major, minor, and patch number.
 New versions of the driver will increment these numbers.
 
 The framework is able to get these values by calling `vkGetPhysicalDeviceProperties(physical_device, &properties)`.
