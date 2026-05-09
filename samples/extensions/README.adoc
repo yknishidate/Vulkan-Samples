@@ -96,6 +96,13 @@ Render a basic scene using the official cross-vendor ray tracing extension.
 Shows how to setup all data structures required for ray tracing, including the bottom and top level acceleration structures for the geometry, the shader binding table and the ray tracing pipelines with shader groups for ray generation, ray hits, and ray misses.
 After dispatching the rays, the final result is copied to the swapchain image.
 
+=== xref:./{extension_samplespath}opacity_micromap/README.adoc[Opacity micromap]
+
+*Extensions*: https://docs.vulkan.org/spec/latest/appendices/extensions.html#VK_EXT_opacity_micromap[`VK_EXT_opacity_micromap`], https://www.khronos.org/registry/vulkan/specs/latest/html/vkspec.html#VK_KHR_ray_tracing_pipeline[`VK_KHR_ray_tracing_pipeline`], https://www.khronos.org/registry/vulkan/specs/latest/html/vkspec.html#VK_KHR_acceleration_structure[`VK_KHR_acceleration_structure`]
+
+Renders a basic ray tracing scene using an opacity micromap attached to the bottom level acceleration structure.
+The micromap marks one micro-triangle as transparent, allowing traversal to treat alpha-style coverage without an any-hit shader.
+
 === xref:./{extension_samplespath}ray_tracing_extended/README.adoc[Extended hardware accelerated ray tracing]
 
 *Extensions*: https://www.khronos.org/registry/vulkan/specs/latest/html/vkspec.html#VK_KHR_ray_tracing_pipeline[`VK_KHR_ray_tracing_pipeline`], https://www.khronos.org/registry/vulkan/specs/latest/html/vkspec.html#VK_KHR_acceleration_structure[`VK_KHR_acceleration_structure`]

@@ -73,6 +73,7 @@ set(ORDER_LIST
     "push_descriptors"
     "ray_queries"
     "ray_tracing_basic"
+    "opacity_micromap"
     "ray_tracing_extended"
     "ray_tracing_reflection"
     "ray_tracing_invocation_reorder"
