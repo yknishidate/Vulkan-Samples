@@ -115,7 +115,7 @@ void main()
     }
 
     float alpha = textureLod(alphaMask, uv, 0.0).a;
-    if (alpha >= 0.5)
+    if (alpha > 0.0)
     {
         uint microIndex = barycentricsToSpaceFillingCurveIndex(bary.x, bary.y, constants.subdivisionLevel);
         setOpaque(triangleIndex * constants.microTrianglesPerTriangle + microIndex);

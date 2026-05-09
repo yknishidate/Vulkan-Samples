@@ -25,7 +25,7 @@
 
 namespace
 {
-constexpr uint32_t OpacityMicromapSubdivisionLevel     = 6;
+constexpr uint32_t OpacityMicromapSubdivisionLevel     = 5;
 constexpr uint32_t OpacityMicromapTriangleCount        = 2;
 constexpr uint32_t OpacityMicromapMicroTriangleCount   = 1u << (2u * OpacityMicromapSubdivisionLevel);
 constexpr uint32_t OpacityMicromapTotalMicroTriangles  = OpacityMicromapTriangleCount * OpacityMicromapMicroTriangleCount;
@@ -402,13 +402,14 @@ void OpacityMicromap::create_bottom_level_acceleration_structure()
 	// Setup vertices and indices for a single triangle
 	struct Vertex
 	{
-		float pos[3];
+		float pos[4];
+		float uv[4];
 	};
 	std::vector<Vertex> vertices = {
-	    {{-1.0f, -1.0f, 0.0f}},
-	    {{1.0f, -1.0f, 0.0f}},
-	    {{1.0f, 1.0f, 0.0f}},
-	    {{-1.0f, 1.0f, 0.0f}}};
+	    {{-1.0f, -1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 0.0f}},
+	    {{1.0f, -1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 0.0f}},
+	    {{1.0f, 1.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 0.0f, 0.0f}},
+	    {{-1.0f, 1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f, 0.0f}}};
 	std::vector<uint32_t> indices = {0, 1, 2, 2, 3, 0};
 
 	auto vertex_buffer_size = vertices.size() * sizeof(Vertex);
@@ -418,7 +419,7 @@ void OpacityMicromap::create_bottom_level_acceleration_structure()
 	// For the sake of simplicity we won't stage the vertex data to the GPU memory
 
 	// Note that the buffer usage flags for buffers consumed by the bottom level acceleration structure require special flags
-	const VkBufferUsageFlags buffer_usage_flags = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+	const VkBufferUsageFlags buffer_usage_flags = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 
 	vertex_buffer = std::make_unique<vkb::core::BufferC>(get_device(), vertex_buffer_size, buffer_usage_flags, VMA_MEMORY_USAGE_CPU_TO_GPU);
 	vertex_buffer->update(vertices.data(), vertex_buffer_size);
@@ -726,7 +727,9 @@ void OpacityMicromap::create_descriptor_sets()
 	std::vector<VkDescriptorPoolSize> pool_sizes = {
 	    {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
 	    {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
-	    {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
+	    {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+	    {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
+	    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
 	VkDescriptorPoolCreateInfo descriptor_pool_create_info = vkb::initializers::descriptor_pool_create_info(pool_sizes, 1);
 	VK_CHECK(vkCreateDescriptorPool(get_device().get_handle(), &descriptor_pool_create_info, nullptr, &descriptor_pool));
 
@@ -753,14 +756,23 @@ void OpacityMicromap::create_descriptor_sets()
 	image_descriptor.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 	VkDescriptorBufferInfo buffer_descriptor = create_descriptor(*ubo);
+	VkDescriptorImageInfo  mask_descriptor   = create_descriptor(alpha_mask_texture, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+	VkDescriptorBufferInfo vertex_descriptor = create_descriptor(*vertex_buffer);
+	VkDescriptorBufferInfo index_descriptor  = create_descriptor(*index_buffer);
 
 	VkWriteDescriptorSet result_image_write   = vkb::initializers::write_descriptor_set(descriptor_set, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, &image_descriptor);
 	VkWriteDescriptorSet uniform_buffer_write = vkb::initializers::write_descriptor_set(descriptor_set, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2, &buffer_descriptor);
+	VkWriteDescriptorSet mask_texture_write   = vkb::initializers::write_descriptor_set(descriptor_set, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3, &mask_descriptor);
+	VkWriteDescriptorSet vertex_buffer_write  = vkb::initializers::write_descriptor_set(descriptor_set, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4, &vertex_descriptor);
+	VkWriteDescriptorSet index_buffer_write   = vkb::initializers::write_descriptor_set(descriptor_set, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5, &index_descriptor);
 
 	std::vector<VkWriteDescriptorSet> write_descriptor_sets = {
 	    acceleration_structure_write,
 	    result_image_write,
-	    uniform_buffer_write};
+	    uniform_buffer_write,
+	    mask_texture_write,
+	    vertex_buffer_write,
+	    index_buffer_write};
 	vkUpdateDescriptorSets(get_device().get_handle(), static_cast<uint32_t>(write_descriptor_sets.size()), write_descriptor_sets.data(), 0, VK_NULL_HANDLE);
 }
 
@@ -788,10 +800,31 @@ void OpacityMicromap::create_ray_tracing_pipeline()
 	uniform_buffer_binding.descriptorCount = 1;
 	uniform_buffer_binding.stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 
+	VkDescriptorSetLayoutBinding mask_texture_binding{};
+	mask_texture_binding.binding         = 3;
+	mask_texture_binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	mask_texture_binding.descriptorCount = 1;
+	mask_texture_binding.stageFlags      = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+
+	VkDescriptorSetLayoutBinding vertex_buffer_binding{};
+	vertex_buffer_binding.binding         = 4;
+	vertex_buffer_binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	vertex_buffer_binding.descriptorCount = 1;
+	vertex_buffer_binding.stageFlags      = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+
+	VkDescriptorSetLayoutBinding index_buffer_binding{};
+	index_buffer_binding.binding         = 5;
+	index_buffer_binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	index_buffer_binding.descriptorCount = 1;
+	index_buffer_binding.stageFlags      = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
 	    acceleration_structure_layout_binding,
 	    result_image_layout_binding,
-	    uniform_buffer_binding};
+	    uniform_buffer_binding,
+	    mask_texture_binding,
+	    vertex_buffer_binding,
+	    index_buffer_binding};
 
 	VkDescriptorSetLayoutCreateInfo layout_info{};
 	layout_info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
