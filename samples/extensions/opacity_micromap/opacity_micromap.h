@@ -58,6 +58,7 @@ class OpacityMicromap : public ApiVulkanSample
 	AccelerationStructure bottom_level_acceleration_structure;
 	AccelerationStructure top_level_acceleration_structure;
 	Micromap              opacity_micromap;
+	Texture               alpha_mask_texture;
 
 	std::unique_ptr<vkb::core::BufferC>               vertex_buffer;
 	std::unique_ptr<vkb::core::BufferC>               index_buffer;

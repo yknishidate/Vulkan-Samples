@@ -29,6 +29,7 @@ add_sample_with_tags(
         "opacity_micromap/glsl/raygen.rgen"
         "opacity_micromap/glsl/miss.rmiss"
         "opacity_micromap/glsl/closesthit.rchit"
+        "opacity_micromap/glsl/bake_omm.comp"
     GLSLC_ADDITIONAL_ARGUMENTS
         "--target-spv=spv1.4"
     )

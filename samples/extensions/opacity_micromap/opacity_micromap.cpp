@@ -25,10 +25,15 @@
 
 namespace
 {
-constexpr uint32_t OpacityMicromapSubdivisionLevel    = 1;
-constexpr uint32_t OpacityMicromapMicroTriangleCount  = 4;
-constexpr uint32_t OpacityMicromapDataSize            = (OpacityMicromapMicroTriangleCount + 7) / 8;
-constexpr uint32_t OpacityMicromapBuildInputAlignment = 256;
+constexpr uint32_t OpacityMicromapSubdivisionLevel     = 6;
+constexpr uint32_t OpacityMicromapTriangleCount        = 2;
+constexpr uint32_t OpacityMicromapMicroTriangleCount   = 1u << (2u * OpacityMicromapSubdivisionLevel);
+constexpr uint32_t OpacityMicromapTotalMicroTriangles  = OpacityMicromapTriangleCount * OpacityMicromapMicroTriangleCount;
+constexpr uint32_t OpacityMicromapTriangleDataSize     = (OpacityMicromapMicroTriangleCount + 7) / 8;
+constexpr uint32_t OpacityMicromapDataSize             = (OpacityMicromapTotalMicroTriangles + 7) / 8;
+constexpr uint32_t OpacityMicromapBuildInputAlignment  = 256;
+constexpr uint32_t OpacityMicromapBakeWorkgroupSizeX   = 16;
+constexpr uint32_t OpacityMicromapBakeWorkgroupSizeY   = 16;
 }        // namespace
 
 OpacityMicromap::OpacityMicromap()
@@ -68,6 +73,8 @@ OpacityMicromap::~OpacityMicromap()
 		delete_acceleration_structure(top_level_acceleration_structure);
 		delete_acceleration_structure(bottom_level_acceleration_structure);
 		delete_micromap(opacity_micromap);
+		alpha_mask_texture.image.reset();
+		vkDestroySampler(get_device().get_handle(), alpha_mask_texture.sampler, nullptr);
 		vertex_buffer.reset();
 		index_buffer.reset();
 		ubo.reset();
@@ -216,35 +223,92 @@ void OpacityMicromap::delete_scratch_buffer(ScratchBuffer &scratch_buffer)
 
 void OpacityMicromap::create_opacity_micromap()
 {
-	const std::array<uint8_t, OpacityMicromapDataSize> opacity_data = {0b00001101};        // Four 2-state micro-triangles: opaque, transparent, opaque, opaque.
-	const VkMicromapTriangleEXT micromap_triangle{
-	    0,
-	    OpacityMicromapSubdivisionLevel,
-	    VK_OPACITY_MICROMAP_FORMAT_2_STATE_EXT};
-	const uint32_t micromap_index = 0;
+	alpha_mask_texture = load_texture("textures/omm_leaf_mask.ktx", vkb::sg::Image::Color);
+
+	const std::array<VkMicromapTriangleEXT, OpacityMicromapTriangleCount> micromap_triangles = {
+	    VkMicromapTriangleEXT{0, OpacityMicromapSubdivisionLevel, VK_OPACITY_MICROMAP_FORMAT_2_STATE_EXT},
+	    VkMicromapTriangleEXT{OpacityMicromapTriangleDataSize, OpacityMicromapSubdivisionLevel, VK_OPACITY_MICROMAP_FORMAT_2_STATE_EXT}};
+	const std::array<uint32_t, OpacityMicromapTriangleCount> micromap_indices = {0, 1};
 
 	VkMicromapUsageEXT micromap_usage{};
-	micromap_usage.count            = 1;
+	micromap_usage.count            = OpacityMicromapTriangleCount;
 	micromap_usage.subdivisionLevel = OpacityMicromapSubdivisionLevel;
 	micromap_usage.format           = VK_OPACITY_MICROMAP_FORMAT_2_STATE_EXT;
 
+	const VkBufferUsageFlags data_buffer_usage = VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 	const VkBufferUsageFlags build_input_usage = VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-	vkb::core::BufferBuilderC data_buffer_builder{opacity_data.size()};
-	data_buffer_builder.with_usage(build_input_usage)
-	    .with_vma_usage(VMA_MEMORY_USAGE_CPU_TO_GPU)
-	    .with_vma_flags(VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT)
+	vkb::core::BufferBuilderC data_buffer_builder{OpacityMicromapDataSize};
+	data_buffer_builder.with_usage(data_buffer_usage)
+	    .with_vma_usage(VMA_MEMORY_USAGE_GPU_ONLY)
 	    .with_alignment(OpacityMicromapBuildInputAlignment);
-	vkb::core::BufferBuilderC triangle_buffer_builder{sizeof(micromap_triangle)};
+	vkb::core::BufferBuilderC triangle_buffer_builder{sizeof(micromap_triangles)};
 	triangle_buffer_builder.with_usage(build_input_usage)
 	    .with_vma_usage(VMA_MEMORY_USAGE_CPU_TO_GPU)
 	    .with_vma_flags(VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT)
 	    .with_alignment(OpacityMicromapBuildInputAlignment);
 	opacity_micromap.data_buffer     = std::make_unique<vkb::core::BufferC>(get_device(), data_buffer_builder);
 	opacity_micromap.triangle_buffer = std::make_unique<vkb::core::BufferC>(get_device(), triangle_buffer_builder);
-	opacity_micromap.index_buffer    = std::make_unique<vkb::core::BufferC>(get_device(), sizeof(micromap_index), build_input_usage, VMA_MEMORY_USAGE_CPU_TO_GPU);
-	opacity_micromap.data_buffer->update(opacity_data.data(), opacity_data.size());
-	opacity_micromap.triangle_buffer->update(&micromap_triangle, sizeof(micromap_triangle));
-	opacity_micromap.index_buffer->update(&micromap_index, sizeof(micromap_index));
+	opacity_micromap.index_buffer    = std::make_unique<vkb::core::BufferC>(get_device(), sizeof(micromap_indices), build_input_usage, VMA_MEMORY_USAGE_CPU_TO_GPU);
+	opacity_micromap.triangle_buffer->update(micromap_triangles.data(), sizeof(micromap_triangles));
+	opacity_micromap.index_buffer->update(micromap_indices.data(), sizeof(micromap_indices));
+
+	VkDescriptorSetLayoutBinding mask_texture_binding{};
+	mask_texture_binding.binding         = 0;
+	mask_texture_binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	mask_texture_binding.descriptorCount = 1;
+	mask_texture_binding.stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	VkDescriptorSetLayoutBinding output_buffer_binding{};
+	output_buffer_binding.binding         = 1;
+	output_buffer_binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	output_buffer_binding.descriptorCount = 1;
+	output_buffer_binding.stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	std::array<VkDescriptorSetLayoutBinding, 2> bake_bindings = {mask_texture_binding, output_buffer_binding};
+	VkDescriptorSetLayoutCreateInfo            bake_layout_info{};
+	bake_layout_info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	bake_layout_info.bindingCount = static_cast<uint32_t>(bake_bindings.size());
+	bake_layout_info.pBindings    = bake_bindings.data();
+
+	VkDescriptorSetLayout bake_descriptor_set_layout = VK_NULL_HANDLE;
+	VK_CHECK(vkCreateDescriptorSetLayout(get_device().get_handle(), &bake_layout_info, nullptr, &bake_descriptor_set_layout));
+
+	VkPushConstantRange push_constant_range = vkb::initializers::push_constant_range(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(glm::uvec4), 0);
+	VkPipelineLayoutCreateInfo bake_pipeline_layout_info{};
+	bake_pipeline_layout_info.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	bake_pipeline_layout_info.setLayoutCount         = 1;
+	bake_pipeline_layout_info.pSetLayouts            = &bake_descriptor_set_layout;
+	bake_pipeline_layout_info.pushConstantRangeCount = 1;
+	bake_pipeline_layout_info.pPushConstantRanges    = &push_constant_range;
+
+	VkPipelineLayout bake_pipeline_layout = VK_NULL_HANDLE;
+	VK_CHECK(vkCreatePipelineLayout(get_device().get_handle(), &bake_pipeline_layout_info, nullptr, &bake_pipeline_layout));
+
+	VkComputePipelineCreateInfo bake_pipeline_info = vkb::initializers::compute_pipeline_create_info(bake_pipeline_layout);
+	bake_pipeline_info.stage                      = load_shader("opacity_micromap", "bake_omm.comp.spv", VK_SHADER_STAGE_COMPUTE_BIT);
+
+	VkPipeline bake_pipeline = VK_NULL_HANDLE;
+	VK_CHECK(vkCreateComputePipelines(get_device().get_handle(), pipeline_cache, 1, &bake_pipeline_info, nullptr, &bake_pipeline));
+
+	std::array<VkDescriptorPoolSize, 2> bake_pool_sizes = {
+	    VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
+	    VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
+	VkDescriptorPoolCreateInfo bake_descriptor_pool_info = vkb::initializers::descriptor_pool_create_info(
+	    static_cast<uint32_t>(bake_pool_sizes.size()), bake_pool_sizes.data(), 1);
+
+	VkDescriptorPool bake_descriptor_pool = VK_NULL_HANDLE;
+	VK_CHECK(vkCreateDescriptorPool(get_device().get_handle(), &bake_descriptor_pool_info, nullptr, &bake_descriptor_pool));
+
+	VkDescriptorSetAllocateInfo bake_descriptor_set_allocate_info = vkb::initializers::descriptor_set_allocate_info(bake_descriptor_pool, &bake_descriptor_set_layout, 1);
+	VkDescriptorSet             bake_descriptor_set               = VK_NULL_HANDLE;
+	VK_CHECK(vkAllocateDescriptorSets(get_device().get_handle(), &bake_descriptor_set_allocate_info, &bake_descriptor_set));
+
+	VkDescriptorImageInfo mask_descriptor   = create_descriptor(alpha_mask_texture, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+	VkDescriptorBufferInfo output_descriptor = create_descriptor(*opacity_micromap.data_buffer, OpacityMicromapDataSize);
+	std::array<VkWriteDescriptorSet, 2> bake_writes = {
+	    vkb::initializers::write_descriptor_set(bake_descriptor_set, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &mask_descriptor),
+	    vkb::initializers::write_descriptor_set(bake_descriptor_set, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, &output_descriptor)};
+	vkUpdateDescriptorSets(get_device().get_handle(), static_cast<uint32_t>(bake_writes.size()), bake_writes.data(), 0, nullptr);
 
 	VkMicromapBuildInfoEXT build_info{};
 	build_info.sType                       = VK_STRUCTURE_TYPE_MICROMAP_BUILD_INFO_EXT;
@@ -279,9 +343,54 @@ void OpacityMicromap::create_opacity_micromap()
 	build_info.scratchData.deviceAddress    = scratch_buffer.device_address;
 
 	VkCommandBuffer command_buffer = get_device().create_command_buffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+	vkCmdFillBuffer(command_buffer, opacity_micromap.data_buffer->get_handle(), 0, OpacityMicromapDataSize, 0);
+
+	VkMemoryBarrier2 clear_to_compute_barrier{};
+	clear_to_compute_barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+	clear_to_compute_barrier.srcStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+	clear_to_compute_barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+	clear_to_compute_barrier.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+	clear_to_compute_barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+
+	VkDependencyInfo clear_to_compute_dependency{};
+	clear_to_compute_dependency.sType              = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+	clear_to_compute_dependency.memoryBarrierCount = 1;
+	clear_to_compute_dependency.pMemoryBarriers    = &clear_to_compute_barrier;
+	vkCmdPipelineBarrier2KHR(command_buffer, &clear_to_compute_dependency);
+
+	const glm::uvec4 bake_constants{
+	    OpacityMicromapSubdivisionLevel,
+	    OpacityMicromapMicroTriangleCount,
+	    alpha_mask_texture.image->get_extent().width,
+	    alpha_mask_texture.image->get_extent().height};
+	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, bake_pipeline);
+	vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, bake_pipeline_layout, 0, 1, &bake_descriptor_set, 0, nullptr);
+	vkCmdPushConstants(command_buffer, bake_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(bake_constants), &bake_constants);
+	vkCmdDispatch(command_buffer,
+	              (alpha_mask_texture.image->get_extent().width + OpacityMicromapBakeWorkgroupSizeX - 1) / OpacityMicromapBakeWorkgroupSizeX,
+	              (alpha_mask_texture.image->get_extent().height + OpacityMicromapBakeWorkgroupSizeY - 1) / OpacityMicromapBakeWorkgroupSizeY,
+	              1);
+
+	VkMemoryBarrier2 compute_to_micromap_barrier{};
+	compute_to_micromap_barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+	compute_to_micromap_barrier.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+	compute_to_micromap_barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+	compute_to_micromap_barrier.dstStageMask  = VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT;
+	compute_to_micromap_barrier.dstAccessMask = VK_ACCESS_2_MICROMAP_READ_BIT_EXT;
+
+	VkDependencyInfo compute_to_micromap_dependency{};
+	compute_to_micromap_dependency.sType              = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+	compute_to_micromap_dependency.memoryBarrierCount = 1;
+	compute_to_micromap_dependency.pMemoryBarriers    = &compute_to_micromap_barrier;
+	vkCmdPipelineBarrier2KHR(command_buffer, &compute_to_micromap_dependency);
+
 	vkCmdBuildMicromapsEXT(command_buffer, 1, &build_info);
 	get_device().flush_command_buffer(command_buffer, queue);
 
+	vkDestroyDescriptorPool(get_device().get_handle(), bake_descriptor_pool, nullptr);
+	vkDestroyPipeline(get_device().get_handle(), bake_pipeline, nullptr);
+	vkDestroyPipelineLayout(get_device().get_handle(), bake_pipeline_layout, nullptr);
+	vkDestroyDescriptorSetLayout(get_device().get_handle(), bake_descriptor_set_layout, nullptr);
 	delete_scratch_buffer(scratch_buffer);
 }
 
@@ -296,10 +405,11 @@ void OpacityMicromap::create_bottom_level_acceleration_structure()
 		float pos[3];
 	};
 	std::vector<Vertex> vertices = {
+	    {{-1.0f, -1.0f, 0.0f}},
+	    {{1.0f, -1.0f, 0.0f}},
 	    {{1.0f, 1.0f, 0.0f}},
-	    {{-1.0f, 1.0f, 0.0f}},
-	    {{0.0f, -1.0f, 0.0f}}};
-	std::vector<uint32_t> indices = {0, 1, 2};
+	    {{-1.0f, 1.0f, 0.0f}}};
+	std::vector<uint32_t> indices = {0, 1, 2, 2, 3, 0};
 
 	auto vertex_buffer_size = vertices.size() * sizeof(Vertex);
 	auto index_buffer_size  = indices.size() * sizeof(uint32_t);
@@ -339,7 +449,7 @@ void OpacityMicromap::create_bottom_level_acceleration_structure()
 	acceleration_structure_geometry.geometry.triangles.sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
 	acceleration_structure_geometry.geometry.triangles.vertexFormat  = VK_FORMAT_R32G32B32_SFLOAT;
 	acceleration_structure_geometry.geometry.triangles.vertexData    = vertex_data_device_address;
-	acceleration_structure_geometry.geometry.triangles.maxVertex     = 3;
+	acceleration_structure_geometry.geometry.triangles.maxVertex     = static_cast<uint32_t>(vertices.size()) - 1;
 	acceleration_structure_geometry.geometry.triangles.vertexStride  = sizeof(Vertex);
 	acceleration_structure_geometry.geometry.triangles.indexType     = VK_INDEX_TYPE_UINT32;
 	acceleration_structure_geometry.geometry.triangles.indexData     = index_data_device_address;
@@ -353,11 +463,11 @@ void OpacityMicromap::create_bottom_level_acceleration_structure()
 	triangles_opacity_micromap.baseTriangle              = 0;
 	triangles_opacity_micromap.usageCountsCount          = 1;
 	VkMicromapUsageEXT triangles_micromap_usage{};
-	triangles_micromap_usage.count                      = 1;
-	triangles_micromap_usage.subdivisionLevel           = OpacityMicromapSubdivisionLevel;
-	triangles_micromap_usage.format                     = VK_OPACITY_MICROMAP_FORMAT_2_STATE_EXT;
-	triangles_opacity_micromap.pUsageCounts                  = &triangles_micromap_usage;
-	triangles_opacity_micromap.micromap                      = opacity_micromap.handle;
+	triangles_micromap_usage.count                       = OpacityMicromapTriangleCount;
+	triangles_micromap_usage.subdivisionLevel            = OpacityMicromapSubdivisionLevel;
+	triangles_micromap_usage.format                      = VK_OPACITY_MICROMAP_FORMAT_2_STATE_EXT;
+	triangles_opacity_micromap.pUsageCounts              = &triangles_micromap_usage;
+	triangles_opacity_micromap.micromap                  = opacity_micromap.handle;
 	acceleration_structure_geometry.geometry.triangles.pNext = &triangles_opacity_micromap;
 
 	// Get the size requirements for buffers involved in the acceleration structure build process
@@ -368,7 +478,7 @@ void OpacityMicromap::create_bottom_level_acceleration_structure()
 	acceleration_structure_build_geometry_info.geometryCount = 1;
 	acceleration_structure_build_geometry_info.pGeometries   = &acceleration_structure_geometry;
 
-	const uint32_t primitive_count = 1;
+	const uint32_t primitive_count = OpacityMicromapTriangleCount;
 
 	VkAccelerationStructureBuildSizesInfoKHR acceleration_structure_build_sizes_info{};
 	acceleration_structure_build_sizes_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
@@ -410,7 +520,7 @@ void OpacityMicromap::create_bottom_level_acceleration_structure()
 	acceleration_build_geometry_info.scratchData.deviceAddress = scratch_buffer.device_address;
 
 	VkAccelerationStructureBuildRangeInfoKHR acceleration_structure_build_range_info;
-	acceleration_structure_build_range_info.primitiveCount                                           = 1;
+	acceleration_structure_build_range_info.primitiveCount                                           = OpacityMicromapTriangleCount;
 	acceleration_structure_build_range_info.primitiveOffset                                          = 0;
 	acceleration_structure_build_range_info.firstVertex                                              = 0;
 	acceleration_structure_build_range_info.transformOffset                                          = 0;

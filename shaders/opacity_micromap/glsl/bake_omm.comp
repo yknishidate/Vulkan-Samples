@@ -1,0 +1,123 @@
+/* Copyright (c) 2026, The Khronos Group
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(binding = 0, set = 0) uniform sampler2D alphaMask;
+layout(binding = 1, set = 0) buffer OmmData
+{
+    uint words[];
+} ommData;
+
+layout(push_constant) uniform Constants
+{
+    uint subdivisionLevel;
+    uint microTrianglesPerTriangle;
+    uint textureWidth;
+    uint textureHeight;
+} constants;
+
+uint barycentricsToSpaceFillingCurveIndex(float u, float v, uint level)
+{
+    u = clamp(u, 0.0, 1.0);
+    v = clamp(v, 0.0, 1.0);
+
+    float scale = float(1u << level);
+    float fu    = u * scale;
+    float fv    = v * scale;
+
+    uint iu = uint(fu);
+    uint iv = uint(fv);
+
+    float uf = fu - float(iu);
+    float vf = fv - float(iv);
+
+    if (iu >= (1u << level))
+    {
+        iu = (1u << level) - 1u;
+    }
+    if (iv >= (1u << level))
+    {
+        iv = (1u << level) - 1u;
+    }
+
+    uint iuv = iu + iv;
+
+    if (iuv >= (1u << level))
+    {
+        iu -= iuv - (1u << level) + 1u;
+    }
+
+    uint iw = ~(iu + iv);
+
+    if (uf + vf >= 1.0 && iuv < (1u << level) - 1u)
+    {
+        --iw;
+    }
+
+    uint b0 = ~(iu ^ iw);
+    b0 &= ((1u << level) - 1u);
+    uint t = (iu ^ iv) & b0;
+
+    uint f = t;
+    f ^= f >> 1u;
+    f ^= f >> 2u;
+    f ^= f >> 4u;
+    f ^= f >> 8u;
+    uint b1 = ((f ^ iu) & ~b0) | t;
+
+    b0 = (b0 | (b0 << 8u)) & 0x00ff00ffu;
+    b0 = (b0 | (b0 << 4u)) & 0x0f0f0f0fu;
+    b0 = (b0 | (b0 << 2u)) & 0x33333333u;
+    b0 = (b0 | (b0 << 1u)) & 0x55555555u;
+    b1 = (b1 | (b1 << 8u)) & 0x00ff00ffu;
+    b1 = (b1 | (b1 << 4u)) & 0x0f0f0f0fu;
+    b1 = (b1 | (b1 << 2u)) & 0x33333333u;
+    b1 = (b1 | (b1 << 1u)) & 0x55555555u;
+
+    return b0 | (b1 << 1u);
+}
+
+void setOpaque(uint bitIndex)
+{
+    uint wordIndex = bitIndex >> 5u;
+    uint bit       = bitIndex & 31u;
+    atomicOr(ommData.words[wordIndex], 1u << bit);
+}
+
+void main()
+{
+    uvec2 texel = gl_GlobalInvocationID.xy;
+    if (texel.x >= constants.textureWidth || texel.y >= constants.textureHeight)
+    {
+        return;
+    }
+
+    vec2 uv = (vec2(texel) + vec2(0.5)) / vec2(constants.textureWidth, constants.textureHeight);
+    uint triangleIndex;
+    vec2 bary;
+
+    if (uv.y <= uv.x)
+    {
+        // Triangle 0: uv vertices (0,0), (1,0), (1,1). bary.x/y correspond to vertices 1/2.
+        triangleIndex = 0u;
+        bary          = vec2(uv.x - uv.y, uv.y);
+    }
+    else
+    {
+        // Triangle 1: uv vertices (1,1), (0,1), (0,0). bary.x/y correspond to vertices 1/2.
+        triangleIndex = 1u;
+        bary          = vec2(uv.y - uv.x, 1.0 - uv.y);
+    }
+
+    float alpha = textureLod(alphaMask, uv, 0.0).a;
+    if (alpha >= 0.5)
+    {
+        uint microIndex = barycentricsToSpaceFillingCurveIndex(bary.x, bary.y, constants.subdivisionLevel);
+        setOpaque(triangleIndex * constants.microTrianglesPerTriangle + microIndex);
+    }
+}

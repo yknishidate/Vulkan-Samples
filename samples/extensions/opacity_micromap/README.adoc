@@ -27,6 +27,6 @@ endif::[]
 *Extensions*: https://docs.vulkan.org/spec/latest/appendices/extensions.html#VK_EXT_opacity_micromap[`VK_EXT_opacity_micromap`], https://www.khronos.org/registry/vulkan/specs/latest/html/vkspec.html#VK_KHR_ray_tracing_pipeline[`VK_KHR_ray_tracing_pipeline`], https://www.khronos.org/registry/vulkan/specs/latest/html/vkspec.html#VK_KHR_acceleration_structure[`VK_KHR_acceleration_structure`]
 
 Render a basic ray tracing scene with an opacity micromap attached to the bottom level acceleration structure.
-The sample builds a 2-state opacity micromap for a single triangle subdivided into four micro-triangles, with one micro-triangle marked transparent.
-This demonstrates how opacity data can be evaluated during traversal without adding an any-hit shader.
+The sample loads `assets/textures/omm_leaf_mask.ktx` and uses a compute shader to bake the texture alpha channel into a 2-state opacity micromap for a quad made from two triangles.
+This demonstrates how alpha-style coverage can be evaluated during traversal without adding an any-hit shader.
 After dispatching the rays, the final result is copied to the swapchain image.
