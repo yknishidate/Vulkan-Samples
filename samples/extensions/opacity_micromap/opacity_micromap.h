@@ -83,6 +83,8 @@ class OpacityMicromap : public ApiVulkanSample
 	{
 		glm::mat4 view_inverse;
 		glm::mat4 proj_inverse;
+		uint64_t  vertex_buffer_address;
+		uint64_t  index_buffer_address;
 	} uniform_data;
 	std::unique_ptr<vkb::core::BufferC> ubo;
 

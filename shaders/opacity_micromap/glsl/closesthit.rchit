@@ -17,37 +17,44 @@
 
 #version 460
 #extension GL_EXT_ray_tracing : enable
+#extension GL_EXT_scalar_block_layout : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_buffer_reference2 : require
 
 layout(location = 0) rayPayloadInEXT vec3 hitValue;
 hitAttributeEXT vec3 attribs;
+
+layout(binding = 2, set = 0) uniform UniformData
+{
+    mat4 viewInverse;
+    mat4 projInverse;
+    uint64_t vertexBufferAddress;
+    uint64_t indexBufferAddress;
+} uniformData;
 
 layout(binding = 3, set = 0) uniform sampler2D maskTexture;
 
 struct Vertex
 {
-    vec4 pos;
-    vec4 uv;
+    vec3 pos;
+    vec2 uv;
 };
 
-layout(binding = 4, set = 0) readonly buffer VertexBuffer
-{
-    Vertex vertices[];
-} vertexBuffer;
-
-layout(binding = 5, set = 0) readonly buffer IndexBuffer
-{
-    uint indices[];
-} indexBuffer;
+layout(buffer_reference, scalar) buffer Vertices { Vertex v[]; };
+layout(buffer_reference, scalar) buffer Indices { uint i[]; };
 
 void main()
 {
+    Vertices vertices = Vertices(uniformData.vertexBufferAddress);
+    Indices indices = Indices(uniformData.indexBufferAddress);
+
     const vec3 barycentricCoords = vec3(1.0f - attribs.x - attribs.y, attribs.x, attribs.y);
     const uint indexOffset = 3 * gl_PrimitiveID;
-    const uint i0 = indexBuffer.indices[indexOffset];
-    const uint i1 = indexBuffer.indices[indexOffset + 1];
-    const uint i2 = indexBuffer.indices[indexOffset + 2];
-    const vec2 uv = vertexBuffer.vertices[i0].uv.xy * barycentricCoords.x +
-                    vertexBuffer.vertices[i1].uv.xy * barycentricCoords.y +
-                    vertexBuffer.vertices[i2].uv.xy * barycentricCoords.z;
+    const uint i0 = indices.i[indexOffset];
+    const uint i1 = indices.i[indexOffset + 1];
+    const uint i2 = indices.i[indexOffset + 2];
+    const vec2 uv = vertices.v[i0].uv * barycentricCoords.x +
+                    vertices.v[i1].uv * barycentricCoords.y +
+                    vertices.v[i2].uv * barycentricCoords.z;
     hitValue = mix(vec3(uv, 0.0), vec3(1.0), texture(maskTexture, uv).r);
 }
