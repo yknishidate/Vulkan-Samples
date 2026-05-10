@@ -285,7 +285,7 @@ void OpacityMicromap::create_opacity_micromap()
 	VK_CHECK(vkCreatePipelineLayout(get_device().get_handle(), &bake_pipeline_layout_info, nullptr, &bake_pipeline_layout));
 
 	VkComputePipelineCreateInfo bake_pipeline_info = vkb::initializers::compute_pipeline_create_info(bake_pipeline_layout);
-	bake_pipeline_info.stage                      = load_shader("opacity_micromap", "bake_omm.comp.spv", VK_SHADER_STAGE_COMPUTE_BIT);
+	bake_pipeline_info.stage                       = load_shader("opacity_micromap", "bake_omm.comp.spv", VK_SHADER_STAGE_COMPUTE_BIT);
 
 	VkPipeline bake_pipeline = VK_NULL_HANDLE;
 	VK_CHECK(vkCreateComputePipelines(get_device().get_handle(), pipeline_cache, 1, &bake_pipeline_info, nullptr, &bake_pipeline));
@@ -303,7 +303,7 @@ void OpacityMicromap::create_opacity_micromap()
 	VkDescriptorSet             bake_descriptor_set               = VK_NULL_HANDLE;
 	VK_CHECK(vkAllocateDescriptorSets(get_device().get_handle(), &bake_descriptor_set_allocate_info, &bake_descriptor_set));
 
-	VkDescriptorImageInfo mask_descriptor   = create_descriptor(alpha_mask_texture, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+	VkDescriptorImageInfo mask_descriptor    = create_descriptor(alpha_mask_texture, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 	VkDescriptorBufferInfo output_descriptor = create_descriptor(*opacity_micromap.data_buffer, OpacityMicromapDataSize);
 	std::array<VkWriteDescriptorSet, 2> bake_writes = {
 	    vkb::initializers::write_descriptor_set(bake_descriptor_set, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &mask_descriptor),

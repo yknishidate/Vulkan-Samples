@@ -89,6 +89,12 @@ void setOpaque(uint bitIndex)
     atomicOr(ommData.words[wordIndex], 1u << bit);
 }
 
+void setTriangleOpaque(uint triangleIndex, vec2 bary)
+{
+    uint microIndex = barycentricsToSpaceFillingCurveIndex(bary.x, bary.y, constants.subdivisionLevel);
+    setOpaque(triangleIndex * constants.microTrianglesPerTriangle + microIndex);
+}
+
 void main()
 {
     uvec2 texel = gl_GlobalInvocationID.xy;
@@ -98,26 +104,19 @@ void main()
     }
 
     vec2 uv = (vec2(texel) + vec2(0.5)) / vec2(constants.textureWidth, constants.textureHeight);
-    uint triangleIndex;
-    vec2 bary;
-
-    if (uv.y <= uv.x)
-    {
-        // Triangle 0: uv vertices (0,0), (1,0), (1,1). bary.x/y correspond to vertices 1/2.
-        triangleIndex = 0u;
-        bary          = vec2(uv.x - uv.y, uv.y);
-    }
-    else
-    {
-        // Triangle 1: uv vertices (1,1), (0,1), (0,0). bary.x/y correspond to vertices 1/2.
-        triangleIndex = 1u;
-        bary          = vec2(uv.y - uv.x, 1.0 - uv.y);
-    }
-
     float alpha = textureLod(alphaMask, uv, 0.0).a;
     if (alpha > 0.0)
     {
-        uint microIndex = barycentricsToSpaceFillingCurveIndex(bary.x, bary.y, constants.subdivisionLevel);
-        setOpaque(triangleIndex * constants.microTrianglesPerTriangle + microIndex);
+        // Samples on the shared diagonal edge belong to both source triangles, so both branches intentionally run.
+        if (uv.y <= uv.x)
+        {
+            // Triangle 0: uv vertices (0,0), (1,0), (1,1). bary.x/y correspond to vertices 1/2.
+            setTriangleOpaque(0u, vec2(uv.x - uv.y, uv.y));
+        }
+        if (uv.y >= uv.x)
+        {
+            // Triangle 1: uv vertices (1,1), (0,1), (0,0). bary.x/y correspond to vertices 1/2.
+            setTriangleOpaque(1u, vec2(uv.y - uv.x, 1.0 - uv.y));
+        }
     }
 }
